@@ -1,8 +1,7 @@
 {
   "functions": {
     "api/poll.go": {
-      "maxDuration": 60,
-      "includeFiles": "accounts*.json"
+      "maxDuration": 60
     }
   }
 }

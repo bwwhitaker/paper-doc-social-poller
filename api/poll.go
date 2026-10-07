@@ -36,7 +36,7 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 
 	accountsFile := os.Getenv("ACCOUNTS_FILE")
 	if accountsFile == "" {
-		accountsFile = "accounts.json"
+		accountsFile = "app/accounts/accounts.json"
 	}
 	q := r.URL.Query()
 	opts := app.Options{

@@ -41,23 +41,28 @@ func (c Config) RequireTikTok() error {
 	return nil
 }
 
-// LoadAccounts reads and validates the list of accounts to poll.
+// LoadAccounts reads and validates the list of accounts to poll from a file.
 func LoadAccounts(path string) ([]platform.Account, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
+	return ParseAccounts(raw, path)
+}
+
+// ParseAccounts validates an accounts list; source is only used in errors.
+func ParseAccounts(raw []byte, source string) ([]platform.Account, error) {
 	var accounts []platform.Account
 	if err := json.Unmarshal(raw, &accounts); err != nil {
-		return nil, fmt.Errorf("parse %s: %w", path, err)
+		return nil, fmt.Errorf("parse %s: %w", source, err)
 	}
 	seen := map[string]bool{}
 	for i, a := range accounts {
 		if a.Platform == "" || a.AccountID == "" {
-			return nil, fmt.Errorf("%s: entry %d needs platform and account_id", path, i)
+			return nil, fmt.Errorf("%s: entry %d needs platform and account_id", source, i)
 		}
 		if seen[a.Key()] {
-			return nil, fmt.Errorf("%s: duplicate account %s", path, a.Key())
+			return nil, fmt.Errorf("%s: duplicate account %s", source, a.Key())
 		}
 		seen[a.Key()] = true
 	}

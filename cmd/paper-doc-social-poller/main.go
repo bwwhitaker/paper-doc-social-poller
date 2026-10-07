@@ -24,7 +24,7 @@ func main() {
 
 func run() error {
 	dryRun := flag.Bool("dry-run", false, "fetch and print stats without writing snapshots")
-	accountsFile := flag.String("accounts", "accounts.json", "path to the list of accounts to poll")
+	accountsFile := flag.String("accounts", "app/accounts/accounts.json", "path to the list of accounts to poll")
 	only := flag.String("account", "", `poll only this account, as "platform:account_id"`)
 	flag.Parse()
 

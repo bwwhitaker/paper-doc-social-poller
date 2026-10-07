@@ -4,7 +4,12 @@ package app
 
 import (
 	"context"
+	"embed"
+	"errors"
 	"fmt"
+	"io/fs"
+	"os"
+	"path"
 	"time"
 
 	"github.com/bwwhitaker/paper-doc-social-poller/internal/config"
@@ -13,6 +18,14 @@ import (
 	"github.com/bwwhitaker/paper-doc-social-poller/internal/store"
 	"github.com/bwwhitaker/paper-doc-social-poller/internal/tiktok"
 )
+
+// embeddedAccounts bundles the accounts lists into the binary at compile time.
+// On Vercel the repo files aren't reliably present at runtime, so the function
+// can't count on reading accounts.json from disk. Editing a list means
+// redeploying, which a push does anyway.
+//
+//go:embed accounts/*.json
+var embeddedAccounts embed.FS
 
 // runTimeout caps one poll. The Vercel function's maxDuration should be at
 // least this long.
@@ -30,7 +43,7 @@ func Run(ctx context.Context, opts Options) error {
 	if err != nil {
 		return err
 	}
-	accounts, err := config.LoadAccounts(opts.AccountsFile)
+	accounts, err := loadAccounts(opts.AccountsFile)
 	if err != nil {
 		return err
 	}
@@ -92,4 +105,21 @@ func filter(accounts []platform.Account, key string) []platform.Account {
 		}
 	}
 	return out
+}
+
+// loadAccounts prefers a file on disk (local runs, custom -accounts paths) and
+// falls back to the embedded copy with the same file name.
+func loadAccounts(file string) ([]platform.Account, error) {
+	raw, err := os.ReadFile(file)
+	if err == nil {
+		return config.ParseAccounts(raw, file)
+	}
+	if !errors.Is(err, fs.ErrNotExist) {
+		return nil, err
+	}
+	raw, embErr := embeddedAccounts.ReadFile("accounts/" + path.Base(file))
+	if embErr != nil {
+		return nil, fmt.Errorf("accounts file %s not found on disk or embedded: %w", file, err)
+	}
+	return config.ParseAccounts(raw, "embedded "+path.Base(file))
 }

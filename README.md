@@ -9,7 +9,7 @@ Social APIs only return current totals, so history exists only because snapshots
 ## How it works
 
 1. Supabase `pg_cron` calls `POST /api/poll` on the Vercel deployment **every 5 minutes**, with a bearer secret.
-2. For each account in [accounts.json](accounts.json), the poller loads the stored OAuth token (refreshing it if it expires soon; TikTok rotates refresh tokens, so the new one is saved immediately), then fetches account stats and all public posts.
+2. For each account in [app/accounts/accounts.json](app/accounts/accounts.json), the poller loads the stored OAuth token (refreshing it if it expires soon; TikTok rotates refresh tokens, so the new one is saved immediately), then fetches account stats and all public posts.
 3. It always upserts the account and posts (keeping `last_seen_at` current), but only **stores a snapshot when one is due**, based on the post's age (see [internal/schedule](internal/schedule/schedule.go)):
 
    | Post age      | Snapshot at most every |
@@ -24,7 +24,7 @@ Accounts are independent: if one fails, the others still run, and the request re
 
 TikTok can take a while to show a new video in the API, so the first snapshot lands when TikTok exposes it, not when it was posted. `published_at` is still the real post time.
 
-## accounts.json
+## Accounts list (app/accounts/accounts.json)
 
 The list of accounts to poll. Only listed accounts are polled, even if other tokens are stored.
 
@@ -32,7 +32,7 @@ The list of accounts to poll. Only listed accounts are polled, even if other tok
 [{ "platform": "tiktok", "account_id": "<open_id>", "label": "Founder" }]
 ```
 
-`account_id` is the platform's stable ID (TikTok's `open_id`), not the @handle. `social-auth` prints the line to add after you authorize an account. The IDs aren't secrets, so this file is committed. To use a different file per environment, set the `ACCOUNTS_FILE` env var (files matching `accounts*.json` are bundled with the function).
+`account_id` is the platform's stable ID (TikTok's `open_id`), not the @handle. `social-auth` prints the line to add after you authorize an account. The IDs aren't secrets, so this file is committed. The files in `app/accounts/` are **embedded into the binary at compile time**, because Vercel doesn't reliably provide repo files at runtime. Editing the list means redeploying (a push does that). To use a different list per environment, add e.g. `app/accounts/accounts.preview.json` and set the `ACCOUNTS_FILE` env var to that name. Locally, a file on disk is preferred over the embedded copy.
 
 ## Environments
 
@@ -43,7 +43,7 @@ Vercel's Production and Preview environments have separate env vars, so each can
 | `DATABASE_URL`                              | Supabase **transaction pooler** URI (port 6543). Serverless functions open many short connections.   |
 | `TIKTOK_CLIENT_KEY`, `TIKTOK_CLIENT_SECRET` | Sandbox app for preview; production app once TikTok approves it.                                     |
 | `POLL_SECRET`                               | Random string; the endpoint rejects requests without it. The same value goes into the `pg_cron` job. |
-| `ACCOUNTS_FILE`                             | Optional; defaults to `accounts.json`.                                                               |
+| `ACCOUNTS_FILE`                             | Optional; file name in `app/accounts/`. Defaults to `accounts.json`.                                                              |
 
 Each Supabase project needs the migration, its own authorized tokens (run `social-auth` once per database), and its own `pg_cron` job pointing at its own deployment URL.
 
@@ -67,7 +67,7 @@ If you change a column the poller uses, update `internal/store/store.go` to matc
 1. New package `internal/<platform>` with a client and a type implementing `platform.Provider` (`Name`, `Refresh`, `Fetch`).
 2. Add a case in `buildProviders` in `app/app.go`, and a case in `cmd/social-auth/main.go` for its authorization flow.
 3. Add its credentials to `internal/config` and the Vercel env vars.
-4. Add accounts to `accounts.json`. No schema change is needed; platform-specific extras go in the `metrics` jsonb columns.
+4. Add accounts to `app/accounts/accounts.json`. No schema change is needed; platform-specific extras go in the `metrics` jsonb columns.
 
 Check the platform's API docs first. Instagram likely needs a Meta developer app and a Business or Creator account.
 
@@ -93,7 +93,7 @@ Refresh tokens last about a year; when one expires, that account fails with a me
 
 ## To do
 
-- Verify the Vercel setup on a real deployment: Go runtime version, `maxDuration` for your plan, and that `accounts.json` is bundled.
+- Verify the Vercel setup on a real deployment: Go runtime version and `maxDuration` for your plan.
 - Submit the TikTok app for review; Sandbox isn't meant for permanent use.
 - Instagram provider.
 - **Future: TikTok trends.** No workable official source found: the Research API excludes commercial users, and Creative Center is a browser tool with no API. Options are paid third-party data providers or scraping (brittle, against TikTok's terms). First decide what "trends" means: TikTok-wide, or what works in the test prep and tutoring niche.
