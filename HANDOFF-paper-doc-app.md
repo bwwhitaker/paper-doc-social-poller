@@ -168,6 +168,12 @@ create extension if not exists pg_net;
 -- Store the shared secret once. It must equal POLL_SECRET in Vercel.
 select vault.create_secret('<paste POLL_SECRET here>', 'poller_secret');
 
+-- Preview deployments are behind Vercel Deployment Protection. For those, also
+-- store the project's "Protection Bypass for Automation" secret (Vercel →
+-- Settings → Deployment Protection). Production URLs are public by default, so
+-- production can skip this secret and the header below.
+select vault.create_secret('<paste Vercel bypass secret here>', 'vercel_bypass');
+
 select cron.schedule(
   'social-poll',
   '*/5 * * * *',
@@ -176,7 +182,10 @@ select cron.schedule(
     url := 'https://<deployment-host>/api/poll',
     headers := jsonb_build_object(
       'Authorization',
-      'Bearer ' || (select decrypted_secret from vault.decrypted_secrets where name = 'poller_secret')
+      'Bearer ' || (select decrypted_secret from vault.decrypted_secrets where name = 'poller_secret'),
+      -- Preview only (remove for production):
+      'x-vercel-protection-bypass',
+      (select decrypted_secret from vault.decrypted_secrets where name = 'vercel_bypass')
     ),
     body := '{}'::jsonb
   );
