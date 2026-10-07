@@ -1,6 +1,6 @@
 # paper-doc-social-poller
 
-Records Paper Doc Tutoring's social media performance over time. A Go function on Vercel, triggered by Supabase `pg_cron`, stores snapshots in Supabase Postgres. The admin dashboard that charts them lives in `paper-doc-app` (see [HANDOFF-paper-doc-app.md](HANDOFF-paper-doc-app.md)).
+This go poller records Paper Doc Tutoring's social media performance over time. A Go function on Vercel, triggered by Supabase `pg_cron`, stores snapshots in Supabase Postgres. The admin dashboard that charts them lives in `paper-doc-app` (see [HANDOFF-paper-doc-app.md](HANDOFF-paper-doc-app.md)).
 
 TikTok is supported today; the code is built so Instagram (or others) can be added as another platform.
 
@@ -12,11 +12,11 @@ Social APIs only return current totals, so history exists only because snapshots
 2. For each account in [accounts.json](accounts.json), the poller loads the stored OAuth token (refreshing it if it expires soon; TikTok rotates refresh tokens, so the new one is saved immediately), then fetches account stats and all public posts.
 3. It always upserts the account and posts (keeping `last_seen_at` current), but only **stores a snapshot when one is due**, based on the post's age (see [internal/schedule](internal/schedule/schedule.go)):
 
-   | Post age | Snapshot at most every |
-   |---|---|
-   | under 1 hour | 5 minutes |
-   | 1 to 48 hours | 1 hour |
-   | over 48 hours | 24 hours |
+   | Post age      | Snapshot at most every |
+   | ------------- | ---------------------- |
+   | under 1 hour  | 5 minutes              |
+   | 1 to 48 hours | 1 hour                 |
+   | over 48 hours | 24 hours               |
 
    A post seen for the first time is always snapshotted. Account stats (followers) are stored hourly. A minute of slack covers scheduling jitter.
 
@@ -29,9 +29,7 @@ TikTok can take a while to show a new video in the API, so the first snapshot la
 The list of accounts to poll. Only listed accounts are polled, even if other tokens are stored.
 
 ```json
-[
-  {"platform": "tiktok", "account_id": "<open_id>", "label": "Founder"}
-]
+[{ "platform": "tiktok", "account_id": "<open_id>", "label": "Founder" }]
 ```
 
 `account_id` is the platform's stable ID (TikTok's `open_id`), not the @handle. `social-auth` prints the line to add after you authorize an account. The IDs aren't secrets, so this file is committed. To use a different file per environment, set the `ACCOUNTS_FILE` env var (files matching `accounts*.json` are bundled with the function).
@@ -40,12 +38,12 @@ The list of accounts to poll. Only listed accounts are polled, even if other tok
 
 Vercel's Production and Preview environments have separate env vars, so each can point at its own Supabase project:
 
-| Variable | Notes |
-|---|---|
-| `DATABASE_URL` | Supabase **transaction pooler** URI (port 6543). Serverless functions open many short connections. |
-| `TIKTOK_CLIENT_KEY`, `TIKTOK_CLIENT_SECRET` | Sandbox app for preview; production app once TikTok approves it. |
-| `POLL_SECRET` | Random string; the endpoint rejects requests without it. The same value goes into the `pg_cron` job. |
-| `ACCOUNTS_FILE` | Optional; defaults to `accounts.json`. |
+| Variable                                    | Notes                                                                                                |
+| ------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| `DATABASE_URL`                              | Supabase **transaction pooler** URI (port 6543). Serverless functions open many short connections.   |
+| `TIKTOK_CLIENT_KEY`, `TIKTOK_CLIENT_SECRET` | Sandbox app for preview; production app once TikTok approves it.                                     |
+| `POLL_SECRET`                               | Random string; the endpoint rejects requests without it. The same value goes into the `pg_cron` job. |
+| `ACCOUNTS_FILE`                             | Optional; defaults to `accounts.json`.                                                               |
 
 Each Supabase project needs the migration, its own authorized tokens (run `social-auth` once per database), and its own `pg_cron` job pointing at its own deployment URL.
 
