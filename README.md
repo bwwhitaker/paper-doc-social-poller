@@ -1,6 +1,6 @@
 # paper-doc-social-poller
 
-This go poller records Paper Doc Tutoring's social media performance over time. A Go function on Vercel, triggered by Supabase `pg_cron`, stores snapshots in Supabase Postgres. The admin dashboard that charts them lives in `paper-doc-app` (see [HANDOFF-paper-doc-app.md](HANDOFF-paper-doc-app.md)).
+This go poller records Paper Doc Tutoring's social media performance over time. A Go function on Vercel, triggered by Supabase `pg_cron`, stores snapshots in Supabase Postgres. The admin dashboard that charts them lives in `paper-doc-app`.
 
 TikTok is supported today; the code is built so Instagram (or others) can be added as another platform.
 

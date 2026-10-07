@@ -3,3 +3,6 @@
 /bin/
 *.test
 .DS_Store
+
+# Local handover notes for other repos; not committed
+/handover/
