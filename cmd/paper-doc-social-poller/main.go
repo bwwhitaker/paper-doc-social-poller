@@ -10,7 +10,7 @@ import (
 	"os"
 	"os/signal"
 
-	"github.com/bwwhitaker/paper-doc-social-poller/internal/app"
+	"github.com/bwwhitaker/paper-doc-social-poller/app"
 )
 
 func main() {

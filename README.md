@@ -58,14 +58,14 @@ If you change a column the poller uses, update `internal/store/store.go` to matc
 - `api/poll.go`: the Vercel function (auth check, then `app.Run`)
 - `cmd/paper-doc-social-poller`: same poll from the command line, for local testing
 - `cmd/social-auth`: one-time local helper that authorizes an account and stores its first tokens
-- `internal/app`: shared entry point; `internal/poller`: per-account loop and snapshot planning; `internal/schedule`: cadence rules
+- `app`: shared entry point; `internal/poller`: per-account loop and snapshot planning; `internal/schedule`: cadence rules
 - `internal/platform`: the `Provider` interface and shared types; `internal/tiktok`: TikTok client and its `Provider`
 - `internal/config`, `internal/store`
 
 ## Adding a platform (e.g. Instagram)
 
 1. New package `internal/<platform>` with a client and a type implementing `platform.Provider` (`Name`, `Refresh`, `Fetch`).
-2. Add a case in `buildProviders` in `internal/app/app.go`, and a case in `cmd/social-auth/main.go` for its authorization flow.
+2. Add a case in `buildProviders` in `app/app.go`, and a case in `cmd/social-auth/main.go` for its authorization flow.
 3. Add its credentials to `internal/config` and the Vercel env vars.
 4. Add accounts to `accounts.json`. No schema change is needed; platform-specific extras go in the `metrics` jsonb columns.
 

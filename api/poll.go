@@ -9,7 +9,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/bwwhitaker/paper-doc-social-poller/internal/app"
+	"github.com/bwwhitaker/paper-doc-social-poller/app"
 )
 
 // Handler requires POST with "Authorization: Bearer $POLL_SECRET". Optional
