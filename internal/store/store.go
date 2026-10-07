@@ -3,13 +3,14 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/bwwhitaker/paper-doc-social-poller/internal/tiktok"
+	"github.com/bwwhitaker/paper-doc-social-poller/internal/platform"
 )
 
 type Store struct {
@@ -35,45 +36,104 @@ func Open(ctx context.Context, databaseURL string) (*Store, error) {
 
 func (s *Store) Close(ctx context.Context) error { return s.conn.Close(ctx) }
 
-// ErrNoToken means nobody has authorized the app yet.
-var ErrNoToken = errors.New("no tiktok token stored; run cmd/tiktok-auth first")
+// ErrNoToken means nobody has authorized this account yet.
+var ErrNoToken = errors.New("no token stored for this account; run cmd/social-auth first")
 
-// LoadToken returns the single stored token row.
-func (s *Store) LoadToken(ctx context.Context) (tiktok.Token, error) {
-	var t tiktok.Token
+// LoadToken returns the stored token for one account.
+func (s *Store) LoadToken(ctx context.Context, a platform.Account) (platform.Token, error) {
+	var (
+		t                platform.Token
+		refresh          *string // nullable columns scan into pointers
+		refreshExpiresAt *time.Time
+	)
 	err := s.conn.QueryRow(ctx, `
-		select open_id, access_token, access_token_expires_at,
+		select access_token, access_token_expires_at,
 		       refresh_token, refresh_token_expires_at
-		from tiktok_oauth_tokens
-		order by updated_at desc limit 1`).
-		Scan(&t.OpenID, &t.AccessToken, &t.AccessTokenExpiresAt,
-			&t.RefreshToken, &t.RefreshTokenExpiresAt)
+		from social_oauth_tokens
+		where platform = $1 and account_id = $2`,
+		a.Platform, a.AccountID).
+		Scan(&t.AccessToken, &t.AccessTokenExpiresAt, &refresh, &refreshExpiresAt)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return tiktok.Token{}, ErrNoToken
+		return platform.Token{}, ErrNoToken
 	}
-	return t, err
+	if err != nil {
+		return platform.Token{}, err
+	}
+	if refresh != nil {
+		t.RefreshToken = *refresh
+	}
+	if refreshExpiresAt != nil {
+		t.RefreshTokenExpiresAt = *refreshExpiresAt
+	}
+	return t, nil
 }
 
-func (s *Store) SaveToken(ctx context.Context, t tiktok.Token) error {
+func (s *Store) SaveToken(ctx context.Context, a platform.Account, t platform.Token) error {
 	_, err := s.conn.Exec(ctx, `
-		insert into tiktok_oauth_tokens
-		  (open_id, access_token, access_token_expires_at,
+		insert into social_oauth_tokens
+		  (platform, account_id, access_token, access_token_expires_at,
 		   refresh_token, refresh_token_expires_at, updated_at)
-		values ($1, $2, $3, $4, $5, now())
-		on conflict (open_id) do update set
+		values ($1, $2, $3, $4, $5, $6, now())
+		on conflict (platform, account_id) do update set
 		  access_token = excluded.access_token,
 		  access_token_expires_at = excluded.access_token_expires_at,
 		  refresh_token = excluded.refresh_token,
 		  refresh_token_expires_at = excluded.refresh_token_expires_at,
 		  updated_at = now()`,
-		t.OpenID, t.AccessToken, t.AccessTokenExpiresAt,
-		t.RefreshToken, t.RefreshTokenExpiresAt)
+		a.Platform, a.AccountID, t.AccessToken, t.AccessTokenExpiresAt,
+		nullIfEmpty(t.RefreshToken), nullIfZero(t.RefreshTokenExpiresAt))
 	return err
 }
 
-// SaveSnapshot writes one poll's worth of data atomically: either the account
-// row, all video upserts and all video snapshots land, or none do.
-func (s *Store) SaveSnapshot(ctx context.Context, at time.Time, user tiktok.UserStats, videos []tiktok.Video) (err error) {
+// Plan says which snapshot rows to write on this run. Account and post
+// records are always upserted (so last_seen_at stays accurate); snapshot rows
+// are only added where the schedule says one is due.
+type Plan struct {
+	Account bool            // store an account snapshot
+	Posts   map[string]bool // post IDs to store a snapshot for
+}
+
+// LastSnapshots returns when the account and each of its posts were last
+// snapshotted. A zero time means never.
+func (s *Store) LastSnapshots(ctx context.Context, a platform.Account) (time.Time, map[string]time.Time, error) {
+	var last *time.Time // max() over no rows is NULL
+	if err := s.conn.QueryRow(ctx, `
+		select max(captured_at) from social_account_snapshots
+		where platform = $1 and account_id = $2`,
+		a.Platform, a.AccountID).Scan(&last); err != nil {
+		return time.Time{}, nil, fmt.Errorf("last account snapshot: %w", err)
+	}
+	var account time.Time
+	if last != nil {
+		account = *last
+	}
+
+	rows, err := s.conn.Query(ctx, `
+		select s.post_id, max(s.captured_at)
+		from social_post_snapshots s
+		join social_posts p on p.platform = s.platform and p.post_id = s.post_id
+		where p.platform = $1 and p.account_id = $2
+		group by s.post_id`,
+		a.Platform, a.AccountID)
+	if err != nil {
+		return time.Time{}, nil, fmt.Errorf("last post snapshots: %w", err)
+	}
+	defer rows.Close()
+	posts := map[string]time.Time{}
+	for rows.Next() {
+		var id string
+		var at time.Time
+		if err := rows.Scan(&id, &at); err != nil {
+			return time.Time{}, nil, err
+		}
+		posts[id] = at
+	}
+	return account, posts, rows.Err()
+}
+
+// SaveSnapshot writes one account's poll atomically: either everything in the
+// plan lands, or nothing does.
+func (s *Store) SaveSnapshot(ctx context.Context, at time.Time, a platform.Account, snap platform.Snapshot, plan Plan) error {
 	tx, err := s.conn.Begin(ctx)
 	if err != nil {
 		return err
@@ -82,41 +142,91 @@ func (s *Store) SaveSnapshot(ctx context.Context, at time.Time, user tiktok.User
 	// is the idiomatic way to guarantee cleanup on every error path.
 	defer tx.Rollback(ctx)
 
-	if _, err := tx.Exec(ctx, `
-		insert into tiktok_account_snapshots
-		  (captured_at, follower_count, following_count, likes_count, video_count)
-		values ($1, $2, $3, $4, $5)`,
-		at, user.FollowerCount, user.FollowingCount, user.LikesCount, user.VideoCount); err != nil {
-		return fmt.Errorf("insert account snapshot: %w", err)
+	st := snap.Stats
+	statsExtra, err := jsonb(st.Extra)
+	if err != nil {
+		return err
 	}
 
-	for _, v := range videos {
-		var published *time.Time // a nil pointer becomes SQL NULL
-		if v.CreateTime != 0 {
-			p := time.Unix(v.CreateTime, 0).UTC()
-			published = &p
+	if _, err := tx.Exec(ctx, `
+		insert into social_accounts (platform, account_id, label, display_name, updated_at)
+		values ($1, $2, $3, $4, $5)
+		on conflict (platform, account_id) do update set
+		  label = excluded.label,
+		  display_name = excluded.display_name,
+		  updated_at = excluded.updated_at`,
+		a.Platform, a.AccountID, a.Label, st.DisplayName, at); err != nil {
+		return fmt.Errorf("upsert account: %w", err)
+	}
+
+	if plan.Account {
+		if _, err := tx.Exec(ctx, `
+			insert into social_account_snapshots
+			  (platform, account_id, captured_at, follower_count, following_count,
+			   likes_count, post_count, metrics)
+			values ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)`,
+			a.Platform, a.AccountID, at, st.Followers, st.Following,
+			st.Likes, st.PostCount, statsExtra); err != nil {
+			return fmt.Errorf("insert account snapshot: %w", err)
+		}
+	}
+
+	for _, p := range snap.Posts {
+		extra, err := jsonb(p.Extra)
+		if err != nil {
+			return err
 		}
 		if _, err := tx.Exec(ctx, `
-			insert into tiktok_videos
-			  (video_id, title, video_description, share_url, duration_seconds,
-			   published_at, first_seen_at, last_seen_at)
-			values ($1, $2, $3, $4, $5, $6, $7, $7)
-			on conflict (video_id) do update set
+			insert into social_posts
+			  (platform, post_id, account_id, title, description, url,
+			   duration_seconds, published_at, first_seen_at, last_seen_at)
+			values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9)
+			on conflict (platform, post_id) do update set
 			  title = excluded.title,
-			  video_description = excluded.video_description,
-			  share_url = excluded.share_url,
+			  description = excluded.description,
+			  url = excluded.url,
 			  duration_seconds = excluded.duration_seconds,
 			  last_seen_at = excluded.last_seen_at`,
-			v.ID, v.Title, v.VideoDescription, v.ShareURL, v.Duration, published, at); err != nil {
-			return fmt.Errorf("upsert video %s: %w", v.ID, err)
+			a.Platform, p.ID, a.AccountID, p.Title, p.Description, p.URL,
+			p.DurationSeconds, nullIfZero(p.PublishedAt), at); err != nil {
+			return fmt.Errorf("upsert post %s: %w", p.ID, err)
+		}
+		if !plan.Posts[p.ID] {
+			continue
 		}
 		if _, err := tx.Exec(ctx, `
-			insert into tiktok_video_snapshots
-			  (video_id, captured_at, view_count, like_count, comment_count, share_count)
-			values ($1, $2, $3, $4, $5, $6)`,
-			v.ID, at, v.ViewCount, v.LikeCount, v.CommentCount, v.ShareCount); err != nil {
-			return fmt.Errorf("insert video snapshot %s: %w", v.ID, err)
+			insert into social_post_snapshots
+			  (platform, post_id, captured_at, view_count, like_count,
+			   comment_count, share_count, metrics)
+			values ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)`,
+			a.Platform, p.ID, at, p.Views, p.Likes, p.Comments, p.Shares, extra); err != nil {
+			return fmt.Errorf("insert post snapshot %s: %w", p.ID, err)
 		}
 	}
 	return tx.Commit(ctx)
+}
+
+// jsonb encodes extras for a "$n::jsonb" parameter. Passing a string (not
+// []byte) matters: the simple protocol would send []byte as bytea.
+func jsonb(m map[string]any) (string, error) {
+	if len(m) == 0 {
+		return "{}", nil
+	}
+	b, err := json.Marshal(m)
+	return string(b), err
+}
+
+// A nil pointer becomes SQL NULL.
+func nullIfEmpty(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
+}
+
+func nullIfZero(t time.Time) *time.Time {
+	if t.IsZero() {
+		return nil
+	}
+	return &t
 }

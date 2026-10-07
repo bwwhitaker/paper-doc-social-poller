@@ -1,10 +1,12 @@
-// Command tiktok-auth performs the one-time founder authorization and stores
-// the first tokens. Run it locally, not in CI.
+// Command social-auth performs the one-time authorization for an account and
+// stores its first tokens. Run it locally, not in CI.
 //
-//	TIKTOK_REDIRECT_URI must exactly match a redirect URI registered in the
-//	TikTok developer portal. The page it points to doesn't need to work: after
-//	the founder approves, TikTok redirects there with ?code=... in the URL,
-//	and you paste that code back here.
+//	go run ./cmd/social-auth tiktok
+//
+// For TikTok, TIKTOK_REDIRECT_URI must exactly match a redirect URI registered
+// in the developer portal. The page it points to doesn't need to work: after
+// the account owner approves, TikTok redirects there with ?code=... in the
+// URL, and you paste that code back here.
 package main
 
 import (
@@ -18,6 +20,7 @@ import (
 	"time"
 
 	"github.com/bwwhitaker/paper-doc-social-poller/internal/config"
+	"github.com/bwwhitaker/paper-doc-social-poller/internal/platform"
 	"github.com/bwwhitaker/paper-doc-social-poller/internal/store"
 	"github.com/bwwhitaker/paper-doc-social-poller/internal/tiktok"
 )
@@ -30,8 +33,24 @@ func main() {
 }
 
 func run() error {
+	if len(os.Args) != 2 {
+		return fmt.Errorf("usage: social-auth <platform>   (supported: tiktok)")
+	}
 	cfg, err := config.Load()
 	if err != nil {
+		return err
+	}
+
+	switch os.Args[1] {
+	case "tiktok":
+		return authTikTok(cfg)
+	default:
+		return fmt.Errorf("unsupported platform %q (supported: tiktok)", os.Args[1])
+	}
+}
+
+func authTikTok(cfg config.Config) error {
+	if err := cfg.RequireTikTok(); err != nil {
 		return err
 	}
 	redirect := os.Getenv("TIKTOK_REDIRECT_URI")
@@ -46,11 +65,11 @@ func run() error {
 		"redirect_uri":  {redirect},
 		"state":         {"paper-doc-poller"},
 	}
-	fmt.Println("1. Have the founder open this URL and approve:")
+	fmt.Println("1. Log in to the TikTok account you want to track, then open this URL and approve:")
 	fmt.Println()
 	fmt.Println("   https://www.tiktok.com/v2/auth/authorize/?" + q.Encode())
 	fmt.Println()
-	fmt.Println("2. Copy the full URL they land on (or just the code= value) and paste it here:")
+	fmt.Println("2. Copy the full URL you land on (or just the code= value) and paste it here:")
 	fmt.Print("> ")
 
 	line, err := bufio.NewReader(os.Stdin).ReadString('\n')
@@ -62,7 +81,7 @@ func run() error {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
 
-	tok, err := tiktok.NewClient(cfg.TikTokClientKey, cfg.TikTokClientSecret).
+	tok, openID, err := tiktok.NewClient(cfg.TikTokClientKey, cfg.TikTokClientSecret).
 		ExchangeCode(ctx, code, redirect)
 	if err != nil {
 		return err
@@ -72,10 +91,13 @@ func run() error {
 		return err
 	}
 	defer db.Close(context.Background())
-	if err := db.SaveToken(ctx, tok); err != nil {
+
+	acct := platform.Account{Platform: "tiktok", AccountID: openID}
+	if err := db.SaveToken(ctx, acct, tok); err != nil {
 		return err
 	}
-	fmt.Println("Saved token for open_id", tok.OpenID)
+	fmt.Println("Saved token. Add this to accounts.json to start polling it:")
+	fmt.Printf("  {\"platform\": \"tiktok\", \"account_id\": %q, \"label\": \"...\"}\n", openID)
 	return nil
 }
 

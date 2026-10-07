@@ -11,6 +11,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/bwwhitaker/paper-doc-social-poller/internal/platform"
 )
 
 const baseURL = "https://open.tiktokapis.com"
@@ -32,15 +34,6 @@ func NewClient(clientKey, clientSecret string) *Client {
 	}
 }
 
-// Token is the result of an authorization-code exchange or a refresh.
-type Token struct {
-	AccessToken           string
-	AccessTokenExpiresAt  time.Time
-	RefreshToken          string
-	RefreshTokenExpiresAt time.Time
-	OpenID                string
-}
-
 // tokenResponse mirrors TikTok's JSON. Struct tags map JSON keys to fields.
 type tokenResponse struct {
 	AccessToken      string `json:"access_token"`
@@ -54,7 +47,8 @@ type tokenResponse struct {
 }
 
 // ExchangeCode trades a one-time authorization code for the first tokens.
-func (c *Client) ExchangeCode(ctx context.Context, code, redirectURI string) (Token, error) {
+// It also returns the account's open_id, which becomes its account ID.
+func (c *Client) ExchangeCode(ctx context.Context, code, redirectURI string) (platform.Token, string, error) {
 	return c.token(ctx, url.Values{
 		"grant_type":   {"authorization_code"},
 		"code":         {code},
@@ -64,39 +58,39 @@ func (c *Client) ExchangeCode(ctx context.Context, code, redirectURI string) (To
 
 // Refresh gets a new access token. TikTok may also return a NEW refresh token;
 // callers must persist whatever comes back or the old one may stop working.
-func (c *Client) Refresh(ctx context.Context, refreshToken string) (Token, error) {
-	return c.token(ctx, url.Values{
+func (c *Client) Refresh(ctx context.Context, refreshToken string) (platform.Token, error) {
+	tok, _, err := c.token(ctx, url.Values{
 		"grant_type":    {"refresh_token"},
 		"refresh_token": {refreshToken},
 	})
+	return tok, err
 }
 
-func (c *Client) token(ctx context.Context, form url.Values) (Token, error) {
+func (c *Client) token(ctx context.Context, form url.Values) (platform.Token, string, error) {
 	form.Set("client_key", c.clientKey)
 	form.Set("client_secret", c.clientSecret)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
 		c.baseURL+"/v2/oauth/token/", strings.NewReader(form.Encode()))
 	if err != nil {
-		return Token{}, err
+		return platform.Token{}, "", err
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
 	var resp tokenResponse
 	if err := c.do(req, &resp); err != nil {
-		return Token{}, err
+		return platform.Token{}, "", err
 	}
 	if resp.Error != "" || resp.AccessToken == "" {
-		return Token{}, fmt.Errorf("token endpoint: %s: %s", resp.Error, resp.ErrorDescription)
+		return platform.Token{}, "", fmt.Errorf("token endpoint: %s: %s", resp.Error, resp.ErrorDescription)
 	}
 	now := time.Now()
-	return Token{
+	return platform.Token{
 		AccessToken:           resp.AccessToken,
 		AccessTokenExpiresAt:  now.Add(time.Duration(resp.ExpiresIn) * time.Second),
 		RefreshToken:          resp.RefreshToken,
 		RefreshTokenExpiresAt: now.Add(time.Duration(resp.RefreshExpiresIn) * time.Second),
-		OpenID:                resp.OpenID,
-	}, nil
+	}, resp.OpenID, nil
 }
 
 // apiError is the error object the Display API nests in every response.
